@@ -9,7 +9,7 @@ pipeline {
     environment {
         // Build Information
         BUILD_TAG = "${env.BUILD_NUMBER}"
-        GIT_COMMIT_SHORT = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+        // Compute short commit inside a step (not inlined in env with sh)
     }
 
     parameters {
@@ -31,8 +31,10 @@ pipeline {
                 script {
                     echo "Checking out code..."
                     checkout scm
+                    // safe: compute commit here
+                    env.GIT_COMMIT_SHORT = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
                     echo "Deploying to production environment"
-                    echo "Build: ${BUILD_TAG}, Commit: ${GIT_COMMIT_SHORT}"
+                    echo "Build: ${BUILD_TAG}, Commit: ${env.GIT_COMMIT_SHORT}"
                 }
             }
         }
@@ -51,18 +53,17 @@ pipeline {
                 script {
                     echo "Preparing environment configuration..."
 
-                    // Load credentials from Jenkins
+                    // Load credentials from Jenkins (masked)
                     withCredentials([
                         string(credentialsId: 'MYSQL_ROOT_PASSWORD', variable: 'MYSQL_ROOT_PASS'),
-                        string(credentialsId: 'MYSQL_PASSWORD', variable: 'MYSQL_PASS')
+                        string(credentialsId: 'MYSQL_PASSWORD',      variable: 'MYSQL_PASS')
                     ]) {
-                        // Create .env file
-                        sh """
-                            cat > .env <<EOF
-MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASS}
+                        // Safely write .env without using `sh` interpolation
+                        writeFile file: '.env', text: """\
+MYSQL_ROOT_PASSWORD=${env.MYSQL_ROOT_PASS}
 MYSQL_DATABASE=attractions_db
 MYSQL_USER=attractions_user
-MYSQL_PASSWORD=${MYSQL_PASS}
+MYSQL_PASSWORD=${env.MYSQL_PASS}
 MYSQL_PORT=3306
 PHPMYADMIN_PORT=8888
 API_PORT=3001
@@ -70,13 +71,11 @@ DB_PORT=3306
 FRONTEND_PORT=3000
 NODE_ENV=production
 API_HOST=${params.API_HOST}
-EOF
-                        """
-                    }
+""".stripIndent()
 
-                    echo "Environment configuration created"
-                    // Don't print .env to avoid exposing passwords in logs
-                    sh 'echo ".env file created successfully"'
+                        // Avoid printing secrets
+                        echo ".env file created successfully"
+                    }
                 }
             }
         }
@@ -157,30 +156,24 @@ EOF
         success {
             echo "✅ Deployment completed successfully!"
             echo "Build: ${BUILD_TAG}"
-            echo "Commit: ${GIT_COMMIT_SHORT}"
+            echo "Commit: ${env.GIT_COMMIT_SHORT}"
             echo ""
             echo "Access your application:"
             echo "  - Frontend: http://localhost:3000"
             echo "  - API: http://localhost:3001"
             echo "  - phpMyAdmin: http://localhost:8888"
         }
-
         failure {
             echo "❌ Deployment failed!"
-
             script {
                 echo "Printing container logs for debugging..."
                 sh 'docker compose logs --tail=50 || true'
             }
         }
-
         always {
             echo "Cleaning up old Docker resources..."
             sh """
-                # Remove dangling images
                 docker image prune -f
-
-                # Remove old containers
                 docker container prune -f
             """
         }
